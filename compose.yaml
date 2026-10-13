@@ -1,0 +1,58 @@
+x-application: &application
+  build: .
+  environment: &environment
+    DATABASE_URL: postgresql+psycopg://moe:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@database:5432/moe
+    MOE_ENCRYPTION_KEY: ${MOE_ENCRYPTION_KEY:?Generate MOE_ENCRYPTION_KEY}
+    MOE_PRODUCTION: ${MOE_PRODUCTION:-false}
+    MOE_COOKIE_SECURE: ${MOE_COOKIE_SECURE:-false}
+    MOE_ALLOW_REGISTRATION: "false"
+    MOE_ORIGINS: ${MOE_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+    MOE_PROVIDER_HOSTS: ${MOE_PROVIDER_HOSTS:-api.openai.com,router.huggingface.co,host.docker.internal}
+    MOE_HTTP_PROVIDER_HOSTS: ${MOE_HTTP_PROVIDER_HOSTS:-host.docker.internal}
+    MOE_WORKER_ENABLED: "false"
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    database:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: moe
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: moe
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moe -d moe"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  migrate:
+    <<: *application
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+  api:
+    <<: *application
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *application
+    command: ["python", "-m", "moe.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+volumes:
+  postgres:

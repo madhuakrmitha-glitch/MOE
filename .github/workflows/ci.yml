@@ -1,0 +1,65 @@
+name: Verify MOE
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: moe
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: moe_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U moe -d moe_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv .venv && .venv/bin/pip install -e './backend[test]' -c backend/requirements.lock
+      - run: .venv/bin/ruff check backend && .venv/bin/ruff format --check backend
+      - run: cd backend && ../.venv/bin/python -m pytest -q
+      - run: cd backend && ../.venv/bin/python -m pytest -q
+        env:
+          MOE_TEST_DATABASE_URL: postgresql+psycopg://moe:test-password@localhost:5432/moe_test
+      - name: Verify PostgreSQL migration and schema parity
+        env:
+          DATABASE_URL: postgresql+psycopg://moe:test-password@localhost:5432/moe_test
+        run: |
+          cd backend
+          ../.venv/bin/python -c "from moe import models; from moe.db import Base, make_database; from moe.config import Settings; engine, _ = make_database(Settings().database_url); Base.metadata.drop_all(engine)"
+          ../.venv/bin/alembic upgrade head
+          ../.venv/bin/alembic check
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv .venv && .venv/bin/pip install -e './backend[test]' -c backend/requirements.lock
+      - run: cd frontend && npm ci && npm run format:check && npm run build
+      - run: cd frontend && npx playwright install --with-deps chromium
+      - name: Start isolated browser-test services
+        run: |
+          MOE_DATA_DIR=.e2e-data DATABASE_URL=sqlite:///./.e2e-data/moe.db MOE_ALLOW_REGISTRATION=true PYTHONPATH=backend .venv/bin/uvicorn moe.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/moe-api.log 2>&1 &
+          python backend/tests/e2e_provider.py > /tmp/moe-provider.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health/ready && break || sleep 1; done
+      - run: cd frontend && npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: frontend/test-results/
