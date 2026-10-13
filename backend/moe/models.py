@@ -150,7 +150,7 @@ class Run(Base):
     )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     request_id: Mapped[str] = mapped_column(String(80))
-    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     snapshot: Mapped[dict] = mapped_column(JSON)
     input_text: Mapped[str] = mapped_column(Text)
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
